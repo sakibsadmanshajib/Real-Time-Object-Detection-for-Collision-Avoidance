@@ -2,7 +2,21 @@ import cv2
 import torch
 import argparse
 import os
+import torchvision
 from ultralytics import YOLO
+
+# Monkey patch torchvision.ops.nms to run on CPU
+original_nms = torchvision.ops.nms
+
+def nms_on_cpu(boxes, scores, iou_threshold):
+    # Force data to CPU
+    boxes_cpu = boxes.to('cpu')
+    scores_cpu = scores.to('cpu')
+    # Perform NMS on CPU
+    return original_nms(boxes_cpu, scores_cpu, iou_threshold)
+
+torchvision.ops.nms = nms_on_cpu
+
 
 def draw_boxes_on_frame(frame, detections, class_names):
     """
@@ -20,24 +34,30 @@ def draw_boxes_on_frame(frame, detections, class_names):
         # [x1, y1, x2, y2, confidence, class_id]
         # Where (x1, y1) is top-left corner and (x2, y2) is bottom-right.
         x1, y1, x2, y2, conf, cls = map(float, det)
-        label = f"{class_names[int(cls)]} {conf:.2f}"
+        if 0 <= cls < len(class_names):
+            class_label = class_names[int(cls)]
+        else:
+            class_label = "Unknown"
+        label = f"{class_label} {conf:.2f}"
         # Drawing the bounding box
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
         # Drawing the label background
         label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-        top = int(y1)
-        if top - label_size[1] < 0:
-            top = label_size[1]
-        cv2.rectangle(frame, (int(x1), int(top - label_size[1] - 8)),
-                      (int(x1 + label_size[0]), int(top)), (0, 255, 0), cv2.FILLED)
+        top = int(y1) - label_size[1] - 8
+        left = int(x1)
+        if top < 0:
+            top = int(y1) + label_size[1] + 8
+        cv2.rectangle(frame, (left, top),
+                      (left + label_size[0], top + label_size[1] + baseline), (0, 255, 0), cv2.FILLED)
         # Drawing the label text
-        cv2.putText(frame, label, (int(x1), int(top - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(frame, label, (left, top + label_size[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     return frame
 
-def detect_objects_in_video(input_video_path, output_video_path, model, class_names, conf_threshold, iou_threshold, show_live):
+
+def detect_objects_in_video(input_video_path, output_video_path, model, class_names, conf_threshold, iou_threshold, show_live, device):
     """
-    Performs object detection on a video using YOLOv11 model, draws bounding boxes and labels, 
-    and saves/display the output.
+    Performs object detection on a video using a YOLO model, draws bounding boxes and labels, 
+    and saves/displays the output.
 
     Args:
         input_video_path (str): The path to the input video file.
@@ -47,6 +67,7 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
         conf_threshold (float): Confidence threshold for detections.
         iou_threshold (float): IoU threshold for Non-Maximum Suppression (NMS).
         show_live (bool): Whether to display the video output in a window.
+        device (str): The device used for inference (`cpu` or `cuda`).
 
     Returns:
         None
@@ -68,15 +89,16 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
 
-    # Process each frame of the video
+    frame_count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
-            # End of video stream
             break
 
+        frame_count += 1
+
         # Perform object detection with the YOLO model
-        results = model.predict(frame, conf=conf_threshold, iou=iou_threshold, verbose=False)
+        results = model.predict(frame, conf=conf_threshold, iou=iou_threshold, verbose=False, device=device)
         annotated_frame = frame.copy()
 
         # Extract detection data
@@ -85,29 +107,23 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
             boxes = results[0].boxes
             # If boxes exist
             if boxes is not None and len(boxes) > 0:
-                # Convert these boxes into an array of detections for the draw function:
                 detections = []
                 for box in boxes:
                     # box.xyxyn format:  [x1, y1, x2, y2, confidence, class_id]
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     conf = box.conf.item() if box.conf is not None else 0
                     cls = box.cls.item() if box.cls is not None else -1
-                    # Append to detections
                     detections.append([x1, y1, x2, y2, conf, cls])
 
                 annotated_frame = draw_boxes_on_frame(annotated_frame, detections, class_names)
 
-        # Write the annotated frame to output video
         out.write(annotated_frame)
 
-        # If show_live is True, display the frame
         if show_live:
-            cv2.imshow('YOLOv11 Object Detection', annotated_frame)
-            # Press 'q' to quit live display
+            cv2.imshow('YOLO Object Detection', annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-    # Release the capture and writer, close any open windows
     cap.release()
     out.release()
     if show_live:
@@ -115,13 +131,13 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
 
     print(f"Object detection on video completed. Output saved to: {output_video_path}")
 
+
 def main():
-    # Command-line argument parsing
-    parser = argparse.ArgumentParser(description='Object detection in a video using YOLOv11.')
+    parser = argparse.ArgumentParser(description='Object detection in a video using YOLO.')
     parser.add_argument('--input', type=str, required=True, help='Path to the input video file.')
     parser.add_argument('--output', type=str, required=False,
                         help='Path to the output video file. If not specified, `_annotated` will be added to input filename.')
-    parser.add_argument('--weights', type=str, default='best.pt', help='Path to the YOLOv11 trained model weights. Default is `best.pt`.')
+    parser.add_argument('--weights', type=str, default='best.pt', help='Path to the YOLO trained model weights. Default is `best.pt`.')
     parser.add_argument('--conf-threshold', type=float, default=0.25, help='Confidence threshold for object detection.')
     parser.add_argument('--iou-threshold', type=float, default=0.45, help='IoU threshold for Non-Maximum Suppression.')
     parser.add_argument('--show-live', action='store_true', help='If set, display the video output in a window during processing.')
@@ -130,22 +146,18 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # Load the YOLO model
     model = YOLO(args.weights).to(device)
-    # Check if classes are defined in the model, otherwise define them manually
     class_names = model.names if hasattr(model, 'names') else [
         'Car', 'Van', 'Truck', 'Pedestrian', 'Person_sitting', 
         'Cyclist', 'Tram', 'Misc', 'DontCare'
     ]
 
-    # Determine output video path
     if args.output:
         output_video_path = args.output
     else:
         base, ext = os.path.splitext(args.input)
         output_video_path = f"{base}_annotated{ext}"
 
-    # Run object detection on video
     detect_objects_in_video(
         input_video_path=args.input,
         output_video_path=output_video_path,
@@ -153,7 +165,8 @@ def main():
         class_names=class_names,
         conf_threshold=args.conf_threshold,
         iou_threshold=args.iou_threshold,
-        show_live=args.show_live
+        show_live=args.show_live,
+        device=device
     )
 
 if __name__ == "__main__":
