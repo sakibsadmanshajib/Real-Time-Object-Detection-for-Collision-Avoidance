@@ -4,9 +4,11 @@ import argparse
 import os
 import torchvision
 from ultralytics import YOLO
+import time
 
 # Monkey patch torchvision.ops.nms to run on CPU
 original_nms = torchvision.ops.nms
+
 
 def nms_on_cpu(boxes, scores, iou_threshold):
     # Force data to CPU
@@ -14,6 +16,7 @@ def nms_on_cpu(boxes, scores, iou_threshold):
     scores_cpu = scores.to('cpu')
     # Perform NMS on CPU
     return original_nms(boxes_cpu, scores_cpu, iou_threshold)
+
 
 torchvision.ops.nms = nms_on_cpu
 
@@ -90,6 +93,8 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
 
     frame_count = 0
+    start_time = time.time()  # Start timing for FPS calculation
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -123,6 +128,13 @@ def detect_objects_in_video(input_video_path, output_video_path, model, class_na
             cv2.imshow('YOLO Object Detection', annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+
+    end_time = time.time()  # End timing after processing all frames
+    total_time = end_time - start_time
+    # Calculate average inference FPS
+    if total_time > 0:
+        inference_fps = frame_count / total_time
+        print(f"Inference FPS: {inference_fps:.2f} frames per second")
 
     cap.release()
     out.release()
