@@ -107,6 +107,10 @@ This uses the trained weights at `YOLOv11-KITTI/exp1/weights/best.pt`, performs 
 ### `train_model.py`
 The script does not require command-line arguments as it is configured within the code. Adjust the hyperparameters in the script directly.
 
+### My best model weights
+
+Download my best model weights from [here](https://drive.google.com/file/d/1UY_u3iMTglbxarzjccV-AxpHQQtOXqTh/view?usp=sharing)
+
 ### `detect_object.py`
 ```bash
 python detect_object.py --input VIDEO_FILE.mp4 [--output OUTPUT_FILE.mp4] [--weights PATH_TO_BEST.pt] [--conf-threshold 0.25] [--iou-threshold 0.45] [--show-live]
